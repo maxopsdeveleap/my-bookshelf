@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>My Bookshelf</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="navbar">
+    <div class="container">
+      <div class="brand">📚 My Bookshelf</div>
+      <!-- Removed actions bar -->
+    </div>
+  </header>
+
+  <main class="container">
+    <h2>My Book Collection</h2>
+
+    <form id="form">
+      <input name="title" placeholder="Title" required>
+      <input name="author" placeholder="Author" required>
+      <input name="genre" placeholder="Genre">
+      <input name="rating" type="number" min="1" max="5" placeholder="Rating">
+      <textarea name="note" placeholder="Personal Note"></textarea>
+      <button type="submit">Add Book</button>
+    </form>
+
+    <table class="book-table">
+      <thead>
+        <tr>
+          <th>Title</th><th>Author</th><th>Genre</th>
+          <th>Rating</th><th>Note</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="list"></tbody>
+    </table>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

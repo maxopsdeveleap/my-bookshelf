@@ -1,0 +1,54 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bookshelf
+  namespace: bookshelf-app
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: mybookshelf.ddns.net
+    http:
+      paths:
+      - backend:
+          service:
+            name: bookshelf-backend
+            port:
+              number: 5000
+        path: /books
+        pathType: Prefix
+      - backend:
+          service:
+            name: bookshelf-backend
+            port:
+              number: 5000
+        path: /health
+        pathType: Prefix
+      - backend:
+          service:
+            name: bookshelf-backend
+            port:
+              number: 5000
+        path: /metrics
+        pathType: Prefix
+      - backend:
+          service:
+            name: bookshelf-backend
+            port:
+              number: 5000
+        path: /readyz
+        pathType: Prefix
+      - backend:
+          service:
+            name: bookshelf-backend
+            port:
+              number: 5000
+        path: /livez
+        pathType: Prefix
+  tls:
+  - hosts:
+    - mybookshelf.ddns.net
+    secretName: bookshelf-tls

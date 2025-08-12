@@ -1,0 +1,50 @@
+# Example Terraform Variables for My Bookshelf Project
+# Copy this to terraform.tfvars and customize for your setup
+
+#==============================================================================
+# PROJECT CONFIGURATION
+#==============================================================================
+project    = "your-name-my-bookshelf"  # Change to your name
+aws_region = "ap-south-1"               # Or your preferred region
+
+#==============================================================================
+# GLOBAL TAGS (CUSTOMIZE THESE)
+#==============================================================================
+global_tags = {
+  owner           = "your.name"         # Your name
+  Bootcamp        = "BC24"              # Your bootcamp
+  expiration_date = "10-10-25"          # Your expiration date
+  project         = "my-bookshelf"
+  purpose         = "learning"
+  managed_by      = "terraform"
+}
+
+#==============================================================================
+# NETWORKING CONFIGURATION
+#==============================================================================
+vpc_cidr               = "10.20.0.0/16"
+availability_zones     = ["ap-south-1a", "ap-south-1b"]  # Adjust for your region
+public_subnet_cidrs    = ["10.20.1.0/24", "10.20.2.0/24"]
+private_subnet_cidrs   = ["10.20.101.0/24", "10.20.102.0/24"]
+
+#==============================================================================
+# EKS CLUSTER CONFIGURATION
+#==============================================================================
+cluster_version = "1.28"
+
+#==============================================================================
+# NODE GROUP CONFIGURATION
+#==============================================================================
+# Choose your setup:
+
+# Option 1: Full setup (higher cost, better performance)
+node_instance_type     = "t3a.medium"
+node_desired_capacity  = 3
+node_max_capacity      = 3
+node_min_capacity      = 2
+
+# Option 2: Cost-saving setup (uncomment to use)
+# node_instance_type     = "t3a.small"
+# node_desired_capacity  = 2
+# node_max_capacity      = 2
+# node_min_capacity      = 1

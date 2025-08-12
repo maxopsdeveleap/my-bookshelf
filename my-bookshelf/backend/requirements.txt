@@ -1,0 +1,8 @@
+flask
+flask_sqlalchemy
+psycopg2-binary
+pytest
+prometheus_client
+python-json-logger
+requests
+flask-cors

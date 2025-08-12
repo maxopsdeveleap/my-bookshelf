@@ -1,0 +1,317 @@
+name: Bookshelf CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, 'feature/*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  ECR_REGISTRY: 793786247026.dkr.ecr.ap-south-1.amazonaws.com
+  ECR_REPO: max-bookshelf-backend
+  AWS_REGION: ap-south-1
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  
+
+      - name: Cache SonarQube scanner
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: sonar-cache-${{ hashFiles('**/*.py') }}
+
+      - name: SonarQube analysis
+        uses: sonarsource/sonarqube-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=my-bookshelf
+            -Dsonar.projectName="My Bookshelf Backend"
+            -Dsonar.sources=backend
+            -Dsonar.exclusions="**/__pycache__/**,**/*.pyc,**/venv/**,**/env/**,**/.pytest_cache/**"
+            -Dsonar.host.url=http://a1a252ba02c514e308237caa9ac9b6ac-2061858646.ap-south-1.elb.amazonaws.com:9000/
+
+  build:
+    runs-on: ubuntu-latest
+    needs: code-quality
+    outputs:
+      image-exists: ${{ steps.check.outputs.exists }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.backend
+          tags: backend:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check image built
+        id: check
+        run: |
+          if docker image inspect backend:ci >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Save Docker image
+        run: |
+          docker save backend:ci | gzip > backend-ci.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: backend-ci.tar.gz
+          retention-days: 1
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        test-type: [unit, api]  
+    steps:
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Load Docker image
+        run: docker load < backend-ci.tar.gz
+
+      - name: Run ${{ matrix.test-type }} tests
+        run: |
+          docker run --rm \
+            -e PYTHONPATH=/app \
+            backend:ci \
+            python -m pytest tests/test_${{ matrix.test-type }}.py -v
+
+  e2e-tests:
+    runs-on: ubuntu-latest
+    needs: test  
+    if: github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'feature/')
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Load Docker image
+        run: docker load < backend-ci.tar.gz
+
+      - name: Run E2E tests
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+        run: |
+          docker compose up -d --build
+          sleep 5
+          
+          # Health checks
+          docker compose exec backend curl -f http://localhost:5000/health || exit 1
+          docker compose exec backend curl -f http://localhost:5000/books || exit 1
+          
+          # Run tests
+          docker compose exec backend python3 -m pytest tests/test_api.py -v
+          docker compose exec backend python3 tests/e2e_http.py
+
+      - name: Cleanup E2E
+        if: always()
+        run: docker compose down -v || true
+
+  
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [test, e2e-tests]  
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::793786247026:role/GitHubActions-BookshelfApp
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-${{ github.run_id }}
+
+      - name: Generate version tag
+        id: version
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git tag --sort=-version:refname | head -n1 || echo "v0.0.0")
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          
+          if [[ "$COMMIT_MSG" == *"MAJOR:"* ]]; then
+            NEW_VERSION=$(echo $LATEST_TAG | sed 's/v//' | awk -F. '{print "v" ($1+1) ".0.0"}')
+          elif [[ "$COMMIT_MSG" == *"MINOR:"* ]]; then
+            NEW_VERSION=$(echo $LATEST_TAG | sed 's/v//' | awk -F. '{print "v" $1 "." ($2+1) ".0"}')
+          else
+            NEW_VERSION=$(echo $LATEST_TAG | sed 's/v//' | awk -F. '{print "v" $1 "." $2 "." ($3+1)}')
+          fi
+          
+          echo "tag=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Git tag
+        env:
+          IMAGE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.email "max@develeap.com"
+          git config user.name "Max Develeap"
+          git tag $IMAGE_TAG
+          git push origin $IMAGE_TAG
+
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Load and push to ECR
+        env:
+          IMAGE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Login to ECR
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+          
+          # Load, tag and push image
+          docker load < backend-ci.tar.gz
+          docker tag backend:ci $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+
+      - name: Update GitOps repository
+        env:
+          IMAGE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Setup SSH for GitLab
+          mkdir -p ~/.ssh
+          echo "${{ secrets.GITLAB_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan gitlab.com >> ~/.ssh/known_hosts
+          
+          # Clone and update GitOps repo
+          git clone git@gitlab.com:maxopsdeveleap/my-bookshelf-gitops.git
+          cd my-bookshelf-gitops/bookshelf-app
+          
+          # Update image tag in values.yaml
+          sed -i 's/tag: v[0-9]\+\.[0-9]\+\.[0-9]\+/tag: '"$IMAGE_TAG"'/g' values.yaml
+          
+          # Commit and push changes
+          git config user.email "max@develeap.com"
+          git config user.name "Max Develeap"
+          git commit -am "ci: update image tags to $IMAGE_TAG"
+          git push origin main
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: [code-quality, build, test, e2e-tests, deploy]
+    if: always()
+    steps:
+      - name: Determine workflow status
+        id: status
+        run: |
+          if [[ "${{ needs.deploy.result }}" == "success" || "${{ needs.deploy.result }}" == "skipped" ]]; then
+            if [[ "${{ needs.test.result }}" == "success" ]]; then
+              echo "status=success" >> $GITHUB_OUTPUT
+            else
+              echo "status=failure" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send detailed Slack notification
+        if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          # Determine status
+          STATUS="${{ steps.status.outputs.status == 'success' && '✅ SUCCESS' || '❌ FAILURE' }}"
+          
+          # GitHub Actions URLs
+          WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          COMMIT_URL="https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA=${SHORT_SHA:0:7}
+          
+          curl -X POST -H 'Content-type: application/json' --data '{
+            "text": "'$STATUS': ${{ github.workflow }} #${{ github.run_number }}",
+            "attachments": [{
+              "color": "${{ steps.status.outputs.status == 'success' && 'good' || 'danger' }}",
+              "fields": [
+                {
+                  "title": "Repository",
+                  "value": "<https://github.com/${{ github.repository }}|${{ github.repository }}>",
+                  "short": true
+                },
+                {
+                  "title": "Branch",
+                  "value": "${{ github.ref_name }}",
+                  "short": true
+                },
+                {
+                  "title": "Commit",
+                  "value": "<'$COMMIT_URL'|'$SHORT_SHA'>",
+                  "short": true
+                },
+                {
+                  "title": "Author",
+                  "value": "${{ github.actor }}",
+                  "short": true
+                },
+                {
+                  "title": "Workflow Run",
+                  "value": "<'$WORKFLOW_URL'|View Details>",
+                  "short": false
+                },
+                {
+                  "title": "SonarQube",
+                  "value": "<http://aa6cc7032f6274465885929eb5fe2c64-491561497.ap-south-1.elb.amazonaws.com:9000/dashboard?id=my-bookshelf|View Report>",
+                  "short": false
+                }
+              ]
+            }]
+          }' "$SLACK_WEBHOOK"

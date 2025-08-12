@@ -1,0 +1,222 @@
+pipeline {
+  agent any
+
+  environment {
+    ECR_REGISTRY = '793786247026.dkr.ecr.ap-south-1.amazonaws.com'
+    ECR_REPO = 'max-bookshelf-backend'
+  }
+
+  options {
+    skipDefaultCheckout()
+    timestamps()
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('SonarQube Analysis') {
+      steps {
+        withCredentials([string(credentialsId: 'SONARQUBE_TOKEN', variable: 'SONAR_TOKEN')]) {
+          sh '''
+          # Download and install SonarQube scanner if not already installed
+          if [ ! -d "/tmp/sonar-scanner" ]; then
+            cd /tmp
+            curl -sL https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip -o sonar-scanner.zip
+            unzip -q sonar-scanner.zip
+            mv sonar-scanner-5.0.1.3006-linux sonar-scanner
+            rm sonar-scanner.zip
+          fi
+          
+          # Run SonarQube analysis
+          cd "${WORKSPACE}"
+          /tmp/sonar-scanner/bin/sonar-scanner \
+            -Dsonar.projectKey=my-bookshelf \
+            -Dsonar.projectName="My Bookshelf Backend" \
+            -Dsonar.projectVersion=1.0 \
+            -Dsonar.sources=backend \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.exclusions="**/__pycache__/**,**/*.pyc,**/venv/**,**/env/**,**/.pytest_cache/**" \
+            -Dsonar.host.url=http://aa6cc7032f6274465885929eb5fe2c64-491561497.ap-south-1.elb.amazonaws.com:9000/ \
+            -Dsonar.token=$SONAR_TOKEN
+        '''
+        }
+      }
+    }
+
+    stage('Build Docker Images') {
+      steps {
+        sh 'docker build -t backend:ci -f docker/Dockerfile.backend .'
+      }
+    }
+
+    stage('Tests') {
+      parallel {
+        stage('Unit Tests') {
+          steps {
+            sh 'docker run --rm -e PYTHONPATH=/app backend:ci python -m pytest tests/test_unit.py'
+          }
+        }
+        stage('API Tests') {
+          steps {
+            sh 'docker run --rm -e PYTHONPATH=/app backend:ci python -m pytest tests/test_api.py'
+          }
+        }
+      }
+    }
+
+    stage('E2E & API Tests') {
+      when {
+        anyOf {
+          branch 'main'
+          branch pattern: "feature/.*", comparator: "REGEXP"
+        }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'POSTGRES_USER', variable: 'POSTGRES_USER'),
+          string(credentialsId: 'POSTGRES_PASSWORD', variable: 'POSTGRES_PASSWORD'),
+          string(credentialsId: 'POSTGRES_DB', variable: 'POSTGRES_DB')
+        ]) {
+          sh '''
+            export POSTGRES_USER=$POSTGRES_USER
+            export POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+            export POSTGRES_DB=$POSTGRES_DB
+            docker compose down -v || true
+            docker compose up -d --build
+            sleep 5
+            docker compose exec backend curl -f http://localhost:5000/health || exit 1
+            docker compose exec backend curl -f http://localhost:5000/books || exit 1
+            docker compose exec backend python3 -m pytest tests/test_api.py
+            docker compose exec backend python3 tests/e2e_http.py
+          '''
+        }
+      }
+      post {
+        always {
+          sh 'docker compose down -v || true'
+        }
+      }
+    }
+
+    stage('Tag & Push to ECR') {
+      when {
+        branch 'main'
+      }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'gitlab-https-credentials', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+          script {
+            sh '''
+              git remote set-url origin https://${GIT_USER}:${GIT_PASS}@gitlab.com/maxopsdeveleap/my-bookshelf-app.git
+              git fetch --tags
+            '''
+            
+            def latestTag = sh(script: "git tag --sort=-version:refname | head -n1", returnStdout: true).trim()
+            
+            if (!latestTag) {
+              latestTag = "v0.0.0"
+            }
+            
+            def commitMessage = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
+            
+            def newVersion
+            if (commitMessage.contains("MAJOR:")) {
+              def versionParts = latestTag.replaceFirst("v", "").split("\\.")
+              def major = versionParts[0] as Integer
+              newVersion = "v${major + 1}.0.0"
+            } else if (commitMessage.contains("MINOR:")) {
+              def versionParts = latestTag.replaceFirst("v", "").split("\\.")
+              def major = versionParts[0] as Integer
+              def minor = versionParts[1] as Integer
+              newVersion = "v${major}.${minor + 1}.0"
+            } else {
+              def versionParts = latestTag.replaceFirst("v", "").split("\\.")
+              def major = versionParts[0] as Integer
+              def minor = versionParts[1] as Integer  
+              def patch = versionParts[2] as Integer
+              newVersion = "v${major}.${minor}.${patch + 1}"
+            }
+            
+            def existingTag = sh(script: "git tag -l ${newVersion}", returnStdout: true).trim()
+            while (existingTag) {
+              def versionParts = newVersion.replaceFirst("v", "").split("\\.")
+              def major = versionParts[0] as Integer
+              def minor = versionParts[1] as Integer
+              def patch = versionParts[2] as Integer
+              newVersion = "v${major}.${minor}.${patch + 1}"
+              existingTag = sh(script: "git tag -l ${newVersion}", returnStdout: true).trim()
+            }
+            
+            env.IMAGE_TAG = newVersion
+
+            sh "git config user.email 'max@develeap.com'"
+            sh "git config user.name 'Max Develeap'"
+            sh "git tag ${env.IMAGE_TAG}"
+            sh "git push origin ${env.IMAGE_TAG}"
+          }
+        }
+        sh '''
+          aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+          docker tag backend:ci ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+          docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+        '''
+      }
+    }
+
+    stage('Deploy') {
+      when {
+        branch 'main'
+      }
+      steps {
+        sshagent(['gitlab-ssh-key']) {
+          sh '''
+            git clone git@gitlab.com:maxopsdeveleap/my-bookshelf-gitops.git
+            cd my-bookshelf-gitops/bookshelf-app
+            sed -i 's/tag: v[0-9]\\+\\.[0-9]\\+\\.[0-9]\\+/tag: '"${IMAGE_TAG}"'/g' values.yaml
+            git config user.email "max@develeap.com"
+            git config user.name "Max Develeap"
+            git commit -am "ci: update image tags to ${IMAGE_TAG}"
+            git push origin main
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      script {
+        def sonarqubeUrl = "http://aa6cc7032f6274465885929eb5fe2c64-491561497.ap-south-1.elb.amazonaws.com:9000/dashboard?id=my-bookshelf"
+        def buildTime = currentBuild.durationString.replace(' and counting', '')
+        def buildUrl = "${env.BUILD_URL}"
+        withCredentials([string(credentialsId: 'slack-webhook-url', variable: 'SLACK_WEBHOOK')]) {
+          sh '''
+            curl -X POST -H 'Content-type: application/json' --data '{
+              "text": "✅ Pipeline SUCCESS: ''' + env.JOB_NAME + ''' #''' + env.BUILD_NUMBER + '''\\nBranch: ''' + env.BRANCH_NAME + '''\\nBuild time: ''' + buildTime + '''\\nJenkins: ''' + buildUrl + '''\\nSonarQube: ''' + sonarqubeUrl + '''\\nUnit tests: PASSED\\nE2E/API tests: PASSED"
+            }' "${SLACK_WEBHOOK}"
+          '''
+        }
+      }
+    }
+    failure {
+      script {
+        def sonarqubeUrl = "http://aa6cc7032f6274465885929eb5fe2c64-491561497.ap-south-1.elb.amazonaws.com:9000/dashboard?id=my-bookshelf"
+        def buildTime = currentBuild.durationString.replace(' and counting', '')
+        def buildUrl = "${env.BUILD_URL}"
+        withCredentials([string(credentialsId: 'slack-webhook-url', variable: 'SLACK_WEBHOOK')]) {
+          sh '''
+            curl -X POST -H 'Content-type: application/json' --data '{
+              "text": "❌ Pipeline FAILURE: ''' + env.JOB_NAME + ''' #''' + env.BUILD_NUMBER + '''\\nBranch: ''' + env.BRANCH_NAME + '''\\nBuild time: ''' + buildTime + '''\\nJenkins: ''' + buildUrl + '''\\nSonarQube: ''' + sonarqubeUrl + '''\\nCheck Jenkins for full logs and details."
+            }' "${SLACK_WEBHOOK}"
+          '''
+        }
+      }
+    }
+    always {
+      cleanWs()
+    }
+  }
+}

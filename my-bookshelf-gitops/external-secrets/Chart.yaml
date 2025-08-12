@@ -1,0 +1,9 @@
+apiVersion: v2
+name: external-secrets
+description: Deploy ESO via official Helm chart
+type: application
+version: 0.1.0
+dependencies:
+  - name: external-secrets
+    version: 0.9.19
+    repository: https://charts.external-secrets.io

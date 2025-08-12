@@ -1,0 +1,105 @@
+:root {
+  --bg: #F9F5EC;        /* parchment */
+  --nav-bg: #5D4037;    /* dark wood */
+  --accent: #D4AF37;    /* gold */
+  --text: #3E2723;      /* cocoa */
+  --secondary: #6D4C41; /* leather */
+  --card-bg: #FFFFFF;
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap');
+
+* { box-sizing: border-box; margin:0; padding:0 }
+
+body {
+  font-family: 'Poppins', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.navbar {
+  background: var(--nav-bg);
+  color: #fff;
+  padding:1rem 0;
+}
+.navbar .container {
+  display:flex; justify-content:space-between; align-items:center;
+  max-width:700px; margin:auto;
+}
+
+.container {
+  max-width:700px; margin:2rem auto; padding:0 1rem;
+}
+h2 { color: var(--nav-bg); margin-bottom:1rem }
+
+form {
+  display:grid;
+  grid-template-columns: repeat(auto-fit,minmax(140px,1fr));
+  gap:1rem; margin-bottom:2rem;
+}
+form textarea {
+  grid-column:1/-1; /* full width */
+  min-height:120px;
+  padding:.75rem; border:1px solid var(--secondary); border-radius:4px;
+  font-size:.95rem;
+}
+form input {
+  padding:.75rem; border:1px solid var(--secondary);
+  border-radius:4px; font-size:.95rem;
+}
+form button {
+  grid-column:1/-1;
+  background: #795548; /* brown */
+  color:#fff; border:none;
+  padding:.75rem; border-radius:4px; cursor:pointer;
+}
+form button:hover { 
+  background: #6d4c41; 
+  opacity: 1; 
+}
+
+.book-table {
+  width:100%; border-collapse:separate; border-spacing:0;
+  background: var(--card-bg); box-shadow:0 2px 4px rgba(0,0,0,0.05);
+}
+.book-table thead th {
+  background: var(--nav-bg); color:#fff; padding:.75rem;
+}
+.book-table th:first-child { border-top-left-radius:6px }
+.book-table th:last-child  { border-top-right-radius:6px }
+.book-table td {
+  padding:.75rem; border-top:1px solid #e1e4e8;
+}
+.book-table tbody tr:nth-child(even) { background:#fafafa }
+
+.book-table .edit {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 0.4rem 0.8rem;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 0.3rem;
+}
+.book-table .edit:hover {
+  opacity: 0.9;
+}
+
+/* Red delete button */
+.book-table .edit.delete {
+  background: #dc3545; /* bright red */
+}
+.book-table .edit.delete:hover {
+  background: #c82333;
+}
+
+/* Rating column styled */
+.book-table td:nth-child(4) {
+  font-weight: 600;
+  color: #ff8800; /* orange */
+}
+
+@media(max-width:480px){
+  form { grid-template-columns:1fr }
+  form button, form textarea { grid-column:span 1 }
+}

@@ -1,0 +1,68 @@
+namespace: bookshelf-app
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+
+backend:
+  image:
+    repository: 793786247026.dkr.ecr.ap-south-1.amazonaws.com/max-bookshelf-backend
+    tag: v0.0.25
+    pullPolicy: IfNotPresent
+  replicas: 2
+  service:
+    type: ClusterIP
+    port: 5000
+    targetPort: 5000
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "1"
+  databaseUrl: postgresql://postgres:postgres@bookshelf-app-postgresql.bookshelf-db.svc.cluster.local:5432/books
+
+  probes:
+    liveness:
+      enabled: true
+      path: /livez
+      port: 5000
+      initialDelaySeconds: 15
+      periodSeconds: 20
+      failureThreshold: 3
+    readiness:
+      enabled: true
+      path: /readyz
+      port: 5000
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      failureThreshold: 3
+  config:
+    logLevel: info
+    persistence: true
+
+service:
+  type: LoadBalancer
+  port: 80
+
+postgresql:
+  namespaceOverride: bookshelf-db
+  replicaCount: 1
+  auth:
+    existingSecret: db-creds
+    secretKeys:
+      adminPasswordKey: POSTGRES_PASSWORD
+      userPasswordKey: POSTGRES_PASSWORD  
+      databaseKey: POSTGRES_DB 
+  primary:
+    persistence:
+      enabled: true
+      storageClass: gp2
+      size: 5Gi
+
+networkPolicies:
+  db: false
+  app: false
